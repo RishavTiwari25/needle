@@ -88,7 +88,7 @@ def write_checkpoint(path, checkpoint):
     library.save_file(flatten(checkpoint["params"]), os.fspath(path), metadata=metadata)
 
 
-_ADAPTER_FIELDS = ("scale", "base", "rank", "seed")
+_ADAPTER_FIELDS = ("scale", "base", "rank", "seed", "pieces", "languages")
 
 
 def write_adapter(path, adapter):
@@ -99,6 +99,8 @@ def write_adapter(path, adapter):
     for name, value in adapter["lora"].items():
         tensors[f"lora/{name}/A"] = _contiguous(value["A"])
         tensors[f"lora/{name}/B"] = _contiguous(value["B"])
+    if adapter.get("rows") is not None:
+        tensors["rows"] = _contiguous(adapter["rows"])
     metadata = {key: json.dumps(adapter.get(key), default=str) for key in _ADAPTER_FIELDS}
     library.save_file(tensors, os.fspath(path), metadata=metadata)
 
@@ -111,11 +113,14 @@ def read_adapter(path):
 
     with safe_open(os.fspath(path), framework="np") as handle:
         metadata = handle.metadata() or {}
-    lora = {}
+    lora, rows = {}, None
     for name, value in library.load_file(os.fspath(path)).items():
+        if name == "rows":
+            rows = value
+            continue
         _, key, matrix = name.rsplit("/", 2) if name.count("/") == 2 else (None, *name[5:].rsplit("/", 1))
         lora.setdefault(key, {})[matrix] = value
-    adapter = {"lora": lora}
+    adapter = {"lora": lora, "rows": rows}
     for key in _ADAPTER_FIELDS:
         adapter[key] = _json_or_default(metadata.get(key), None)
     return adapter

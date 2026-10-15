@@ -14,7 +14,7 @@ HELP = """usage: needle <command> [options]
   download       needle3 | needle3.safetensors | <platform> | model-<id> | <org>/<repo>[/<file>.cact]
   fetch          fetch the engine library for this platform
   playground     serve the browser playground
-  whistle        speech to text: playground | compare
+  whistle        speech to text: playground | compare | finetune | build
 
 needle <command> --help for the options of one command.
 Check the readme for the rest."""
@@ -271,8 +271,9 @@ def main():
     v = verbs.add_parser("playground")
     v.add_argument("audio", type=str, nargs="?", default=None,
                    help="A WAV file to transcribe once (default: press Enter to speak)")
-    v.add_argument("--language", type=str, default=None, choices=LANGUAGES,
-                   help="Force the language (default: detect it)")
+    v.add_argument("--language", type=str, default=None,
+                   help="Force the language, one the weights know: " + " ".join(LANGUAGES) + " for the published "
+                        "weights (default: detect it)")
     v.add_argument("--keywords", type=str, default="",
                    help="Words and phrases to favour, comma separated")
     v.add_argument("--word-timestamps", action="store_true",
@@ -284,6 +285,39 @@ def main():
                    help="A WAV file to run through every model once (default: press Enter to speak)")
     v.add_argument("--weights", type=str, default=None,
                    help="whistle.cact to load (default: the published weights)")
+    v = verbs.add_parser("finetune")
+    v.add_argument("jsonl_path", type=str,
+                   help='JSONL of {"audio": WAV path, "text": transcript, "language": code}, one clip per line')
+    v.add_argument("--language", type=str, default=None,
+                   help="Language of lines that do not name one; a new code adds that language")
+    v.add_argument("--tokens", type=str, default=None,
+                   help="File of tokens to add to the vocabulary, one per line")
+    v.add_argument("--checkpoint", type=str, default=None,
+                   help="Base checkpoint (default: checkpoints/whistle.safetensors, downloaded if missing)")
+    v.add_argument("--epochs", type=int, default=3)
+    v.add_argument("--batch-size", type=int, default=16)
+    v.add_argument("--lr", type=float, default=1e-4)
+    v.add_argument("--lora-rank", type=int, default=16, help="LoRA adapter rank (default: 16)")
+    v.add_argument("--lora-alpha", type=float, default=32.0, help="LoRA scaling alpha (default: 32)")
+    v.add_argument("--val-split", type=float, default=0.1,
+                   help="Fraction of clips held out for validation (0 disables)")
+    v.add_argument("--seed", type=int, default=0,
+                   help="Random seed for LoRA init, validation split, and epoch shuffling")
+    v.add_argument("--checkpoint-dir", type=str, default="checkpoints")
+    v.add_argument("--out", type=str, default=None,
+                   help="Output adapter path (.safetensors)")
+    v = verbs.add_parser("build")
+    v.add_argument("checkpoint", type=str, nargs="?", default=None,
+                   help="Base checkpoint (.safetensors); defaults to the adapter's "
+                        "base, else the Whistle base (auto-downloads)")
+    v.add_argument("--lora", type=str, default=None, help="LoRA adapter to merge before export")
+    v.add_argument("--out", type=str, default=None, help="Output .cact path")
+    v.add_argument("--upload", action="store_true", help="Push the .cact to $NEEDLE_HF_REPO")
+    v.add_argument("--layers", type=int, default=None,
+                   help="Export the N-layer decoder rung of the base (2..8); default the full 8")
+    v.add_argument("--platform", type=str, default=None, choices=fetch.PLATFORMS,
+                   help="Also download that platform's engine and header, and place the "
+                        "archive beside them as whistle.cact (--out is then a directory)")
 
     args = parser.parse_args()
 
@@ -381,6 +415,10 @@ def main():
             from .agent.whistle import playground as whistle_main
         elif args.verb == "compare":
             from .agent.whistle import compare as whistle_main
+        elif args.verb == "finetune":
+            from .model.whistle_finetune import finetune_main as whistle_main
+        elif args.verb == "build":
+            from .model.whistle_finetune import build_main as whistle_main
         else:
-            raise SystemExit("needle whistle playground | compare")
+            raise SystemExit("needle whistle playground | compare | finetune | build")
         whistle_main(args)

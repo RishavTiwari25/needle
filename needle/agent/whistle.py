@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -72,6 +73,31 @@ def _read_wav(path):
     except ImportError:
         raise RuntimeError(f"resampling {rate} Hz audio to {SAMPLE_RATE} Hz needs soxr: pip install cactus-needle[mic]") from None
     return soxr.resample(numpy.asarray(mono, numpy.float32), rate, SAMPLE_RATE, quality="HQ")
+
+
+def languages(weights):
+    try:
+        with open(weights, "rb") as handle:
+            raw = handle.read()
+        tag, count, codebook = struct.unpack_from("<III", raw)
+    except (OSError, struct.error):
+        return LANGUAGES
+    if tag != 0x05E12A84:
+        return LANGUAGES
+    record = 196 + codebook * 4
+    for _ in range(count):
+        if raw[record] == 4:
+            offset, size = struct.unpack_from("<QQ", raw, record + 20)
+            blob, found = raw[offset:offset + size], []
+            at = 24
+            for _ in range(struct.unpack_from("<I", blob)[0]):
+                length = struct.unpack_from("<H", blob, at + 5)[0]
+                piece = blob[at + 7:at + 7 + length].decode("utf-8", "replace")
+                at += 7 + length
+                found = found + [piece[2:-2]] if piece.startswith("<|") and piece.endswith("|>") else []
+            return tuple(found) or LANGUAGES
+        record += 44
+    return LANGUAGES
 
 
 def _options(language, keywords):
@@ -357,6 +383,9 @@ def playground(args):
              "stream": False}
     print("whistle playground: downloading and initializing the model...", flush=True)
     whistle = Whistle(weights=args.weights)
+    known = languages(whistle.weights)
+    if args.language and args.language not in known:
+        raise SystemExit("--language is one of " + " ".join(known))
     if args.audio:
         return show_transcript(whistle, args.audio, state)
     print(PLAYGROUND_HELP)
@@ -367,8 +396,8 @@ def playground(args):
             return
         if command == "/language":
             language = rest.strip()
-            if language and language not in LANGUAGES:
-                print("  language is one of", " ".join(LANGUAGES))
+            if language and language not in known:
+                print("  language is one of", " ".join(known))
                 continue
             state["language"] = language or None
             print("  language", state["language"] or "detected")

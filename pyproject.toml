@@ -17,7 +17,8 @@ train = [
   "flax>=0.10.2",
   "optax",
   "safetensors",
-  "sentencepiece"
+  "sentencepiece",
+  "whisper-normalizer"
 ]
 gpu = ["jax[cuda12]"]
 metal = [

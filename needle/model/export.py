@@ -233,7 +233,7 @@ def _q(name, mat, bits, group):
     return _Tensor(name, CQ, mat.shape, packed.tobytes() + norms.tobytes(), group, bits)
 
 
-def _tensors(params, config, bits, group):
+def _tensors(params, config, bits, group, audio=None):
     _, _, orders, heads, sub_dim, sites = _geometry(config)
     num_tables = len(orders) * heads
     embedding = np.asarray(_get(params, ("embedding", "embedding")))
@@ -308,6 +308,71 @@ def _tensors(params, config, bits, group):
 
     ts.append(_fp16("final_norm", params["stack"]["final_norm"]["scale"]))
     ts += _head_tensors(params, group)
+    if audio is not None:
+        ts += _audio_tensors(params, audio, bits, group)
+    return ts
+
+
+AUDIO_MANIFEST_MAGIC = 3246.0
+HADAMARD = ("d1", "d2", "b2", "d3", "d4", "w1a", "w1b", "w2a", "w2b", "w3a", "w3b", "cond_v", "cond_u")
+PROJ = ("q_proj", "k_proj", "v_proj", "gate_proj", "out_proj")
+
+
+def _audio_tensors(params, cfg, bits, group):
+    from .whistle import mel_matrix
+    ts = [_Tensor("audio.manifest", FP32, (13,), np.asarray([
+        AUDIO_MANIFEST_MAGIC, 1, cfg.text, cfg.enc_layers, cfg.enc_lanes, cfg.conv_kernel, cfg.stem,
+        cfg.stem_stages, cfg.mels, cfg.rate, cfg.fft, cfg.win, cfg.hop], np.float32).tobytes())]
+
+    def proj(prefix, p, i):
+        return [_q(f"{prefix}.{n}", np.asarray(p[n]["kernel"][i]).T, bits, group) for n in PROJ]
+
+    b = params["stack"]["layers"]["block"]
+    ca = b["cross_attn"]
+    for i in range(cfg.dec_layers):
+        ts.append(_fp16(f"layer{i:02d}.cross_norm", b["cross_norm"]["scale"][i]))
+        ts += proj(f"layer{i:02d}.cross", ca, i)
+        ts += [
+            _fp16(f"layer{i:02d}.cross_q_norm", ca["q_norm"]["scale"][i]),
+            _fp16(f"layer{i:02d}.cross_k_norm", ca["k_norm"]["scale"][i]),
+            _fp16(f"layer{i:02d}.post_cross_norm", b["post_cross_norm"]["scale"][i]),
+            _fp16(f"layer{i:02d}.cross_gate", np.asarray(b["cross_gate"][i]).reshape(1)),
+        ]
+    ts.append(_fp16("pe_gate", np.asarray(params["pe_gate"]).reshape(1)))
+
+    e = params["encoder"]["layers"]["block"]
+    for i in range(cfg.enc_layers):
+        ts += [_fp16(f"encoder{i:02d}.{n}", e[n]["scale"][i]) for n in (
+            "pre_hada_norm_0", "ZCRMSNorm_0", "post_attn_norm", "conv_norm", "conv_out_norm", "pre_hada_norm")]
+        ts += proj(f"encoder{i:02d}", e["self_attn"], i)
+        ts += [
+            _fp16(f"encoder{i:02d}.q_norm", e["self_attn"]["q_norm"]["scale"][i]),
+            _fp16(f"encoder{i:02d}.k_norm", e["self_attn"]["k_norm"]["scale"][i]),
+            _fp16(f"encoder{i:02d}.attn_gate", np.asarray(e["attn_gate"][i]).reshape(1)),
+            _q(f"encoder{i:02d}.pw1", np.asarray(e["pw1"]["kernel"][i]).T, bits, group),
+            _q(f"encoder{i:02d}.pw2", np.asarray(e["pw2"]["kernel"][i]).T, bits, group),
+            _fp16(f"encoder{i:02d}.dw", np.asarray(e["dw"][i]).reshape(cfg.conv_kernel, -1)),
+        ]
+        ts += [_fp16(f"encoder{i:02d}.{mlp}.{k}", e[mlp][k][i])
+               for mlp in ("hadamard_mlp_0", "hadamard_mlp") for k in HADAMARD]
+
+    enc = params["encoder"]
+    for name in ("mhc_a_pre", "mhc_a_post", "mhc_a_res", "mhc_b_pre", "mhc_b_post", "mhc_b_res"):
+        ts.append(_fp16(f"encoder.{name}", np.asarray(enc[name])))
+    for name in ("mhc_phi_pre", "mhc_phi_post", "mhc_phi_res"):
+        phi = np.asarray(enc[name])
+        L, nC, lanes = phi.shape
+        ts.append(_q(f"encoder.{name}", phi.transpose(0, 2, 1).reshape(L * lanes, nC), bits, group))
+    ts.append(_fp16("encoder.final_norm", enc["final_norm"]["scale"]))
+
+    stem = params["stem"]
+    ts.append(_fp16("stem.w", np.asarray(stem["w"]).reshape(9, -1)))
+    for i in range(1, cfg.stem_stages):
+        ts += [_fp16(f"stem.dw_{i}", np.asarray(stem[f"dw_{i}"]).reshape(9, -1)),
+               _q(f"stem.pw_{i}", np.asarray(stem[f"pw_{i}"]["kernel"]).T, bits, group)]
+    ts.append(_q("stem.out", np.asarray(stem["out"]["kernel"]).T, bits, group))
+    mel = mel_matrix(cfg)
+    ts.append(_Tensor("mel", FP32, mel.shape, mel.tobytes()))
     return ts
 
 
@@ -362,6 +427,22 @@ def _tokenizer_blob(tok):
     return bytes(out)
 
 
+_PROTO_TYPES = {1: TK_NORMAL, 2: TK_UNKNOWN, 3: TK_CONTROL, 4: TK_USER_DEFINED, 6: TK_BYTE}
+
+
+def whistle_tokenizer_blob(proto, languages):
+    spec = proto.trainer_spec
+    out = bytearray(struct.pack(_TK_HDR, len(proto.pieces) + len(languages), spec.pad_id, spec.eos_id, spec.bos_id,
+                                spec.unk_id, int(proto.normalizer_spec.add_dummy_prefix), int(spec.byte_fallback), 0))
+    for piece in proto.pieces:
+        b = piece.piece.encode("utf-8")
+        out += struct.pack(_TK_REC, piece.score, _PROTO_TYPES[piece.type], len(b)) + b
+    for language in languages:
+        b = f"<|{language}|>".encode("utf-8")
+        out += struct.pack(_TK_REC, 0.0, TK_USER_DEFINED, len(b)) + b
+    return bytes(out)
+
+
 def _tokenizer_pieces(blob):
     return struct.unpack_from(_TK_HDR, blob, 0)[0]
 
@@ -389,9 +470,9 @@ def read_tokenizer_blob(path):
     raise ValueError(f"{path} carries no tokenizer")
 
 
-def _pack_cact(params, config, bits, group, tokenizer, kv_window=0):
+def _pack_cact(params, config, bits, group, tokenizer, kv_window=0, audio=None):
     params = {k: v for k, v in params.items()}
-    ts = _tensors(params, config, bits, group)
+    ts = _tensors(params, config, bits, group, audio)
     vocab = int(config.vocab_size)
     out_vocab = int(getattr(config, "out_vocab", 0) or 0)
     if out_vocab > vocab:
@@ -447,8 +528,8 @@ def _pack_cact(params, config, bits, group, tokenizer, kv_window=0):
 
 
 def write_export(params, config, path, bits=WEIGHT_BITS, group=128, tokenizer=None,
-                 kv_window=0):
-    buf, n = _pack_cact(params, config, bits, group, tokenizer, kv_window)
+                 kv_window=0, audio=None):
+    buf, n = _pack_cact(params, config, bits, group, tokenizer, kv_window, audio)
     with open(path, "wb") as f:
         f.write(buf)
     return {"path": path, "bytes": len(buf), "tensors": n}

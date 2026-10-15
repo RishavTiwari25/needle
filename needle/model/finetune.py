@@ -309,7 +309,6 @@ def lora_target_paths(params):
     flat = flatten_dict(params)
     paths = [path for path in flat
              if path[-1] == "kernel"
-             and "stack" in path
              and "layers" in path
              and any(t in path for t in LORA_TARGETS)]
     paths = [p for p in paths if jnp.max(jnp.abs(flat[p])) > 1e-6]
@@ -538,6 +537,8 @@ def build_main(args):
         print(f"  {'wrote':<9} {out}  {os.path.getsize(out) / 1e6:.2f} MB  the published base archive")
     else:
         adapter = read_adapter(args.lora) if args.lora else None
+        if adapter and adapter.get("languages") is not None:
+            raise SystemExit(f"{args.lora} is a Whistle adapter; build it with needle whistle build")
         checkpoint = args.checkpoint
         if not checkpoint and adapter and adapter.get("base") and os.path.exists(adapter["base"]):
             checkpoint = adapter["base"]
@@ -566,12 +567,16 @@ def build_main(args):
         print(f"  {'next':<9} needle.Needle(weights={out!r}, tools=[...])")
 
     if args.upload:
-        repo = os.environ.get("NEEDLE_HF_REPO")
-        if not repo:
-            raise SystemExit("set NEEDLE_HF_REPO=<you>/<model> to upload")
-        from huggingface_hub import HfApi
-        api = HfApi()
-        api.create_repo(repo, repo_type="model", exist_ok=True)
-        api.upload_file(path_or_fileobj=out, path_in_repo=os.path.basename(out),
-                        repo_id=repo, repo_type="model")
-        print(f"  {'uploaded':<9} {os.path.basename(out)}  {repo}")
+        upload_archive(out)
+
+
+def upload_archive(out):
+    repo = os.environ.get("NEEDLE_HF_REPO")
+    if not repo:
+        raise SystemExit("set NEEDLE_HF_REPO=<you>/<model> to upload")
+    from huggingface_hub import HfApi
+    api = HfApi()
+    api.create_repo(repo, repo_type="model", exist_ok=True)
+    api.upload_file(path_or_fileobj=out, path_in_repo=os.path.basename(out),
+                    repo_id=repo, repo_type="model")
+    print(f"  {'uploaded':<9} {os.path.basename(out)}  {repo}")

@@ -14,7 +14,6 @@ DEFAULT_BASE = "checkpoints/whistle.safetensors"
 SAMPLE_RATE = 16000
 SECONDS = 30
 SPACE = "▁"
-ROWS_LR = 10.0
 
 
 class WhistleTokenizer:
@@ -331,13 +330,10 @@ def finetune_main(args):
     total_steps = args.epochs * steps_per_epoch
     warmup = min(max(1, total_steps // 20), total_steps - 1)
 
-    def adamw(lr):
-        return optax.adamw(optax.warmup_cosine_decay_schedule(
-            init_value=0.0, peak_value=lr, warmup_steps=warmup, decay_steps=total_steps))
-
-    labels = {"lora": jax.tree.map(lambda _: "lora", train["lora"]), "rows": "rows"}
-    optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.multi_transform(
-        {"lora": adamw(args.lr), "rows": adamw(args.lr * ROWS_LR)}, labels))
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0, peak_value=args.lr,
+        warmup_steps=warmup, decay_steps=total_steps)
+    optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(schedule))
     opt_state = optimizer.init(train)
     print(f"  {'schedule':<9} {total_steps} steps  warmup {warmup}  cosine decay  clip 1.0  (compiling...)")
 

@@ -83,6 +83,14 @@ One engine holds both models: `needle_load` reads whichever one a `.cact` carrie
 
 The benchmarks against Whisper and Moonshine, the architecture and the interactive demo are at [cactuscompute.com/whistle](https://cactuscompute.com/whistle); the weights and every platform engine are on [Hugging Face](https://huggingface.co/Cactus-Compute/whistle).
 
+Whistle fine-tunes locally: LoRA adapters on the attention projections, base frozen, merged at export, 4-bit. Each JSONL line is `{"audio": "clip.wav", "text": "...", "language": "pt"}`; a language code outside the seven adds that language, and `--tokens` takes a file of words or characters to add to the vocabulary, one per line.
+
+```sh
+pip install "cactus-needle[train]"
+needle whistle finetune clips.jsonl --tokens tokens.txt --out adapter.safetensors
+needle whistle build --lora adapter.safetensors --out tuned.cact
+```
+
 ## Guides
 
 - [How to design tools for Needle 3](https://cactuscompute.com/blog/designing-tools-for-needle): one tool per action, names users would say, formats in descriptions, constraints in the grammar, triggers.

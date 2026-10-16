@@ -17,7 +17,7 @@ def _whistle_weights():
     return os.environ.get("NEEDLE_WHISTLE_WEIGHTS") or os.path.join(fetch.cache_dir(fetch.WHISTLE), fetch.base_weights(fetch.WHISTLE))
 
 
-requires_whistle = pytest.mark.skipif(not (_engine_available("whistle") and os.path.exists(_whistle_weights())),
+requires_whistle = pytest.mark.skipif(not (_engine_available(3) and os.path.exists(_whistle_weights())),
                                       reason="Whistle engine or whistle.cact not installed (auto-fetched from HF on first real use)")
 
 
@@ -163,6 +163,50 @@ def test_wav_files_become_16k_mono_floats(tmp_path, rate, channels, width):
     assert 0.28 < max(samples) < 0.31 and -0.31 < min(samples) < -0.28
     crossings = sum(1 for a, b in zip(samples, samples[1:]) if a < 0 <= b)
     assert 108 <= crossings <= 111
+
+
+def _riff(tag, channels, rate, width, payload, extensible=False, before=b"", after=b""):
+    fmt = struct.pack("<HHIIHH", 0xFFFE if extensible else tag, channels, rate, rate * channels * width, channels * width, 8 * width)
+    if extensible:
+        fmt += struct.pack("<HHIH", 22, 8 * width, 0, tag) + bytes(14)
+
+    def chunk(name, body):
+        return name + struct.pack("<I", len(body)) + body + b"\0" * (len(body) & 1)
+
+    body = b"WAVE" + before + chunk(b"fmt ", fmt) + after + chunk(b"data", payload)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+@pytest.mark.parametrize("numpy_available", [True, False])
+def test_float_and_extensible_wav_files_read_like_pcm(tmp_path, monkeypatch, numpy_available):
+    from needle.agent.whistle import _read_wav
+
+    if not numpy_available:
+        monkeypatch.setitem(sys.modules, "numpy", None)
+    values = [0.0, 0.5, -0.25, 0.75]
+    cases = {
+        "float32": _riff(3, 1, 16000, 4, struct.pack("<4f", *values)),
+        "float64 stereo": _riff(3, 2, 16000, 8, struct.pack("<8d", *[v for v in values for _ in range(2)])),
+        "extensible pcm16": _riff(1, 1, 16000, 2, struct.pack("<4h", *[int(v * 32768) for v in values]), extensible=True),
+        "extensible float32": _riff(3, 1, 16000, 4, struct.pack("<4f", *values), extensible=True),
+        "odd chunk first": _riff(3, 1, 16000, 4, struct.pack("<4f", *values), before=b"LIST\x05\0\0\0abcde\0"),
+    }
+    for name, data in cases.items():
+        path = tmp_path / f"{name}.wav"
+        path.write_bytes(data)
+        assert [round(float(v), 4) for v in _read_wav(str(path))] == values, name
+
+
+def test_files_that_are_not_pcm_or_float_wav_fail(tmp_path):
+    from needle.agent.whistle import _read_wav
+
+    path = tmp_path / "clip.wav"
+    for data in (b"", b"fLaC" + bytes(40), b"RIFF\x04\0\0\0WAVE", _riff(7, 1, 8000, 1, bytes(8))):
+        path.write_bytes(data)
+        with pytest.raises(wave.Error):
+            _read_wav(str(path))
+    path.write_bytes(_riff(1, 1, 16000, 2, b""))
+    assert len(_read_wav(str(path))) == 0
 
 
 def test_samples_accept_lists_arrays_and_float32_bytes():
@@ -316,6 +360,35 @@ class _StreamEngine:
     def needle_stream_transcribe_stop(self, out, capacity):
         self.calls.append(("finish",))
         return self._write(out, "tail", len(self.calls))
+
+
+class _TranscribeEngine:
+    def __init__(self):
+        self.capacities = []
+
+    def needle_load(self, data, size):
+        return 0
+
+    def needle_transcribe(self, samples, count, language, keywords, word_timestamps, out, capacity):
+        self.capacities.append(capacity)
+        out.value = json.dumps({"text": "", "language": "", "ttft_ms": 0.0, "decode_tps": 0.0}).encode()
+        return 0
+
+
+def test_output_buffers_grow_with_the_audio(monkeypatch):
+    from needle.agent import whistle
+
+    monkeypatch.setattr(whistle, "_loaded", None)
+    engine = _TranscribeEngine()
+    monkeypatch.setattr(whistle, "_lib", lambda: engine)
+    model = whistle.Whistle(weights=__file__)
+    model.transcribe([0.0] * 16000)
+    model.transcribe([0.0] * (3600 * 16000))
+    assert engine.capacities == [1 << 18, 3600 * whistle.OUTPUT_BYTES_PER_SECOND]
+    monkeypatch.setattr(whistle, "_lib", lambda: _StreamEngine())
+    streamed = whistle.Whistle(weights=__file__)
+    list(streamed.stream([[0.0] * (120 * 16000)]))
+    assert len(streamed._buffer) == 120 * whistle.OUTPUT_BYTES_PER_SECOND
 
 
 def test_stream_feeds_each_chunk_and_flushes_the_tail(monkeypatch):

@@ -62,7 +62,12 @@ def read_tokens(path):
     if not os.path.isfile(path):
         raise SystemExit(f"--tokens takes a file with one token per line; {path} is not a file")
     with open(path, encoding="utf-8-sig") as handle:
-        return [line.strip() for line in handle if line.strip()]
+        tokens = [line.strip() for line in handle if line.strip()]
+    for token in tokens:
+        if re.fullmatch(r"<\|.*\|>", token):
+            raise SystemExit(f"{path}: {token} looks like a language tag; a new language gets its tag from the clips' "
+                             "\"language\" code, so leave it out of --tokens")
+    return tokens
 
 
 def token_pieces(sp, tokens):
@@ -81,19 +86,14 @@ def token_pieces(sp, tokens):
 
 def read_audio(path):
     import wave
+    from ..agent.whistle import _read_wav
     try:
-        with wave.open(path, "rb") as source:
-            channels, width, rate = source.getnchannels(), source.getsampwidth(), source.getframerate()
-            raw = source.readframes(source.getnframes())
-        if width != 2:
-            from ..agent.whistle import _read_wav
-            return np.asarray(_read_wav(path), np.float32)
-        samples = np.frombuffer(raw, "<i2").reshape(-1, channels).mean(1).astype(np.float32) / 32768.0
-    except (wave.Error, EOFError):
+        return np.asarray(_read_wav(path), np.float32)
+    except wave.Error:
         try:
             import soundfile
         except ImportError:
-            raise RuntimeError(f"{path} is not a PCM WAV file; reading it needs soundfile: "
+            raise RuntimeError(f"{path} is not a PCM or float WAV file; reading it needs soundfile: "
                                "pip install soundfile") from None
         data, rate = soundfile.read(path, dtype="float32", always_2d=True)
         samples = data.mean(1)

@@ -14,6 +14,7 @@ import wave
 
 SAMPLE_RATE = 16000
 LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
+OUTPUT_BYTES_PER_SECOND = 4096
 
 _handle = None
 _loaded = None
@@ -51,21 +52,52 @@ def _lib():
     return _handle
 
 
+_WAV_TYPES = {(1, 1): "B", (1, 2): "h", (1, 3): None, (1, 4): "i", (3, 4): "f", (3, 8): "d"}
+
+
+def _wav_chunks(path):
+    with open(path, "rb") as source:
+        data = source.read()
+    chunks, at = {}, 12
+    while at + 8 <= len(data):
+        size = struct.unpack_from("<I", data, at + 4)[0]
+        chunks.setdefault(data[at:at + 4], data[at + 8:at + 8 + size])
+        at += 8 + size + (size & 1)
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE" or b"fmt " not in chunks or b"data" not in chunks:
+        raise wave.Error(f"{path} is not a WAV file")
+    tag, channels, rate, _, align, _ = struct.unpack_from("<HHIIHH", chunks[b"fmt "])
+    if tag == 0xFFFE:
+        tag = struct.unpack_from("<H", chunks[b"fmt "], 24)[0]
+    width = align // channels
+    if (tag, width) not in _WAV_TYPES:
+        raise wave.Error(f"{path} is not integer PCM or float WAV")
+    return tag, channels, width, rate, chunks[b"data"]
+
+
 def _read_wav(path):
-    with wave.open(path, "rb") as source:
-        channels, width, rate = source.getnchannels(), source.getsampwidth(), source.getframerate()
-        raw = source.readframes(source.getnframes())
-    if width == 3:
-        values = [int.from_bytes(raw[i:i + 3], "little", signed=True) for i in range(0, len(raw), 3)]
+    tag, channels, width, rate, raw = _wav_chunks(path)
+    offset, scale = (0, 1.0) if tag == 3 else (128, 128.0) if width == 1 else (0, float(1 << (8 * width - 1)))
+    try:
+        import numpy
+    except ImportError:
+        numpy = None
+    if numpy is not None:
+        if width == 3:
+            bytes3 = numpy.frombuffer(raw, numpy.uint8).reshape(-1, 3).astype(numpy.int32)
+            values = (bytes3[:, 0] | bytes3[:, 1] << 8 | bytes3[:, 2] << 16) << 8 >> 8
+        else:
+            values = numpy.frombuffer(raw, "<" + _WAV_TYPES[tag, width])
+        mono = (values.reshape(-1, channels).mean(axis=1, dtype=numpy.float32) - offset) / numpy.float32(scale)
     else:
-        values = array.array({1: "B", 2: "h", 4: "i"}[width])
-        values.frombytes(raw)
-        if sys.byteorder == "big":
-            values.byteswap()
-    offset, scale = (128, 128.0) if width == 1 else (0, float(1 << (8 * width - 1)))
-    scale *= channels
-    mono = [(sum(frame) - offset * channels) / scale for frame in zip(*(values[c::channels] for c in range(channels)))]
-    if rate == SAMPLE_RATE or not mono:
+        if width == 3:
+            values = [int.from_bytes(raw[i:i + 3], "little", signed=True) for i in range(0, len(raw), 3)]
+        else:
+            values = array.array(_WAV_TYPES[tag, width])
+            values.frombytes(raw)
+            if sys.byteorder == "big":
+                values.byteswap()
+        mono = [(sum(frame) / channels - offset) / scale for frame in zip(*(values[c::channels] for c in range(channels)))]
+    if rate == SAMPLE_RATE or not len(mono):
         return mono
     try:
         import numpy
@@ -151,6 +183,10 @@ class Whistle:
             raise RuntimeError(_lib().needle_last_error().decode("utf-8", "replace"))
         return json.loads(self._buffer.value.decode("utf-8", "replace"))
 
+    def _reserve(self, size):
+        if size > len(self._buffer):
+            self._buffer = ctypes.create_string_buffer(size)
+
     def transcribe(self, audio, language=None, keywords=None, word_timestamps=False) -> dict:
         """Returns {"text", "language", "ttft_ms", "decode_tps"}, plus "words" with start, end and probability when word_timestamps is set.
 
@@ -159,6 +195,7 @@ class Whistle:
         lib = self._bind()
         samples, count = _samples(audio)
         language, keywords = _options(language, keywords)
+        self._reserve(count // SAMPLE_RATE * OUTPUT_BYTES_PER_SECOND)
         return self._result(lib.needle_transcribe(samples, count, language, keywords, int(bool(word_timestamps)),
                                                   self._buffer, len(self._buffer)))
 
@@ -174,6 +211,7 @@ class Whistle:
         try:
             for chunk in chunks:
                 samples, count = _samples(chunk)
+                self._reserve(count // SAMPLE_RATE * OUTPUT_BYTES_PER_SECOND)
                 yield self._result(lib.needle_stream_transcribe_process(samples, count, language, keywords, self._buffer,
                                                                         len(self._buffer)))
         except BaseException:

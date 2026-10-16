@@ -190,6 +190,25 @@ agent.run("...")
 
 Options: `finetune --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --max-len 1024 --val-split 0.1 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors> --generate <n> --model <id> --workers <n>`; `--model` defaults to `deepseek/deepseek-flash-latest`, `--workers` defaults to `8`, and `--checkpoint-dir` defaults to `checkpoints`. `--generate` synthesizes extra examples through the configured OpenRouter endpoint before training. `build --bits 2|4 --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
 
+Whistle fine-tunes the same way: LoRA on the frozen base, merged at export, 4-bit. Data is JSONL, one clip per line, the audio path relative to the file; a `language` outside `en de fr es it nl pl` adds that language:
+
+```json
+{"audio": "clips/0001.wav", "text": "Quero reservar uma mesa para dois.", "language": "pt"}
+```
+
+```sh
+needle whistle finetune clips.jsonl --tokens tokens.txt                             # LoRA; auto-downloads base
+needle whistle build checkpoints/whistle.safetensors --lora checkpoints/whistle_lora.safetensors --out my.cact
+```
+
+Run a tuned model:
+
+```python
+needle.transcribe("clip.wav", weights="my.cact")
+```
+
+Options: `whistle finetune --language <code> --tokens <file> --epochs 3 --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --val-split 0.1 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors>`; `--language` fills lines without one, `--tokens` is a file of words or characters to add to the vocabulary, one per line, and `--checkpoint-dir` defaults to `checkpoints`. Clips over 30 s are skipped, and the run prints the held-out word error rate (character error rate for Chinese, Japanese, Korean and Thai) on the 4-bit weights. `whistle build --layers N --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
+
 ## Platform (hosted fine-tuning)
 
 The hosted platform at https://cactuscompute.com/v1 trains every size from 2 layers up on GPUs, scores each on your test file, and serves the `.cact` files; the API reference is https://cactuscompute.com/llms/api. The package drives it with a key from https://cactuscompute.com/dashboard/api-keys in `NEEDLE_API_KEY` (never print it). Files are chat-format JSONL: `messages` (OpenAI chat turns, tool calls on the assistant turn as `tool_calls` with `arguments` as a JSON string) and OpenAI-form `tools`.
@@ -239,6 +258,7 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 - `needle playground` - the browser UI locally (hosted at https://cactuscompute.com/needle).
 - `needle whistle playground [clip.wav] [--language en] [--keywords "Siobhan, Krzysztof"] [--word-timestamps] [--weights whistle.cact]` - Whistle speech to text in the terminal: press Enter to speak, Enter again to stop, or pass a WAV file; `/language`, `/keywords`, `/timestamps` and `/file` change the settings between recordings, and `/stream` switches to live transcription, the words printing as they are committed. Recording from the microphone needs the `[mic]` extra. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use and runs on the same engine as Needle; `NEEDLE_WHISTLE_WEIGHTS` points at a local copy and `NEEDLE3_LIB_PATH` at a local engine.
 - `needle whistle compare [clip.wav] [--weights whistle.cact]` - the same English speech through Whistle, Whisper tiny and base (openai-whisper) and Moonshine tiny v2 (moonshine-voice), one line per model with its weight size, time to first token, decode tokens per second, total time and transcript; `/file` runs a WAV between recordings. Whistle's timing comes from the engine's own JSON. Needs the `[mic,compare]` extras.
+- `needle whistle finetune` / `needle whistle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the Whistle fine-tuning pipeline (section above); `build` merges the adapter, slices the `--layers` rung (default 8), exports at 4 bits, and fetches the published `whistle.cact` on every run (without an adapter at full depth it ships that published archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `whistle.cact`.
 - `needle download whistle [--out <dir>]` - pre-download the `whistle.cact` speech weights. There is one engine for both models, so `needle fetch` and `needle download <platform>` cover the library and the platform folders.
 - `needle fetch [--platform-tag <tag>] [--out <dir>]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. For air-gapped devices, also see `NEEDLE3_LIB_PATH` and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
 - `needle platform finetune | generate | jobs | models | files | billing` - the hosted platform from the CLI (section above).

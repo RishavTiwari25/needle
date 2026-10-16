@@ -4,6 +4,8 @@ import wave
 
 import pytest
 
+from conftest import _engine_available
+
 TINY = dict(dim=64, kv_heads=2, qk_dim=16, v_dim=16, enc_layers=2, dec_layers=3, conv_kernel=3, lanes=2,
             enc_lanes=2, sites=(2,), slots=64, hashes=1, stem=8, stem_stages=2, max_tokens=64)
 
@@ -190,6 +192,9 @@ def test_tokens_come_from_a_file(tmp_path):
     listed = tmp_path / "tokens.txt"
     listed.write_bytes("﻿ação \r\n\n  coração\n".encode("utf-8"))
     assert read_tokens(str(listed)) == ["ação", "coração"]
+    listed.write_text("ação\n<|pt|>\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="looks like a language tag"):
+        read_tokens(str(listed))
 
 
 @pytest.mark.slow
@@ -242,3 +247,28 @@ def test_cli_routes_finetune_and_build_and_takes_a_tuned_language(monkeypatch):
         "clips.jsonl", "pt", "tokens.txt", 16, 1e-4)
     assert (built.lora, built.layers, built.out, built.platform, built.upload) == ("a.safetensors", 4, "t.cact", None, False)
     assert played.language == "pt"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _engine_available(3), reason="Whistle engine not installed")
+def test_the_python_encoder_matches_the_engine_embedding(tiny_whistle, published_whistle):
+    import numpy as np
+    from needle.agent.whistle import Whistle as Engine
+    from needle.model.quantize import WEIGHT_BITS, cq_ste_params
+    from needle.model.whistle import Whistle
+    from needle.model.whistle_finetune import load_base
+
+    params, cfg = load_base(tiny_whistle)
+    quantised = cq_ste_params(params, WEIGHT_BITS)
+    engine = Engine(weights=published_whistle[0])
+    t = np.arange(32000)
+    sound = 0.2 * np.sin(0.07 * t) * (1 + np.sin(0.002 * t)) + 0.01 * np.random.default_rng(0).standard_normal(32000)
+    for level in (1.0, 0.01):
+        audio = (sound * level).astype(np.float32)
+        theirs = np.array(engine.embed(audio)).reshape(-1, cfg.dim)
+        spans = np.sqrt((audio[:len(audio) // 320 * 320].reshape(-1, 320) ** 2).mean(1))
+        levelled = audio * (0.1 / np.sort(spans)[int(0.99 * (len(spans) - 1))])
+        ours, frames = Whistle(cfg).apply({"params": quantised}, levelled[None], np.array([len(audio)]), True, method=Whistle.encode)
+        ours = np.asarray(ours[0, :int(frames[0])])
+        assert ours.shape == theirs.shape
+        assert np.linalg.norm(ours - theirs) < 0.05 * np.linalg.norm(theirs)

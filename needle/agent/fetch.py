@@ -35,6 +35,8 @@ WHEEL_TAGS = ("macosx_11_0_arm64", "macosx_11_0_x86_64",
               "manylinux2014_aarch64", "manylinux2014_x86_64",
               "musllinux_1_2_aarch64", "musllinux_1_2_x86_64",
               "win_amd64", "win_arm64")
+# Bionic, for Termux. Only the generation 3 engine is built for it.
+ANDROID_TAG = "android_24_arm64_v8a"
 
 PLATFORMS = ("macos-arm64", "linux-x86_64", "linux-arm64", "linux-armv7",
              "linux-riscv64", "linux-mipsel", "windows-x86_64", "windows-arm64",
@@ -106,7 +108,7 @@ _ENGINE_ARCHES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "
 
 
 def _is_android():
-    """Android reports itself as Linux but links Bionic, where no published engine loads.
+    """Android reports itself as Linux but links Bionic, where the Linux wheels cannot load.
 
     Termux is the usual way this is reached.  ``platform.libc_ver()`` finds no glibc
     there, so the Linux path would pick the musl aarch64 wheel and fail to load it.
@@ -122,12 +124,12 @@ def _platform_tag():
         arch = "arm64" if machine in ("arm64", "aarch64") else "x86_64"
         return "macosx_11_0_" + arch
     if _is_android():
-        raise RuntimeError(
-            "no Needle engine wheel is published for Android (Bionic): the Linux wheels link "
-            "glibc or musl, so libneedle fails to load with a missing libm.so.6. The Android "
-            "builds ship a static library and the needle CLI (needle download android-arm64), "
-            "not a shared library for ctypes; to use the Python API here, build a shared "
-            "libneedle for Bionic and point NEEDLE3_LIB_PATH (NEEDLE2_LIB_PATH for Needle 2) at it.")
+        if machine != "aarch64":
+            raise RuntimeError(
+                f"no Needle engine is published for Android on {platform.machine()}; the Android "
+                "engine is built for arm64. Build libneedle for this machine and point "
+                "NEEDLE3_LIB_PATH (NEEDLE2_LIB_PATH for Needle 2) at it.")
+        return ANDROID_TAG
     arch = _ENGINE_ARCHES.get(machine)
     if arch is None:
         # Any other machine (32-bit ARM or x86, riscv64, a 32-bit Python on
@@ -180,7 +182,8 @@ def unpublished_engine_wheels():
                 listings[repo] = set(list_repo_files(repo))
             except Exception:
                 listings[repo] = set()
-        for tag in WHEEL_TAGS:
+        tags = WHEEL_TAGS + (ANDROID_TAG,) if generation == 3 else WHEEL_TAGS
+        for tag in tags:
             wheel = engine_wheel(ENGINE_VERSIONS[generation], tag, generation)
             if wheel not in listings[repo]:
                 missing.append(repo + "/" + wheel)

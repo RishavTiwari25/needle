@@ -286,8 +286,10 @@ def main():
     v.add_argument("--weights", type=str, default=None,
                    help="whistle.cact to load (default: the published weights)")
     v = verbs.add_parser("finetune")
-    v.add_argument("jsonl_path", type=str,
-                   help='JSONL of {"audio": WAV path, "text": transcript, "language": code}, one clip per line')
+    v.add_argument("train", type=str,
+                   help='Training JSONL of {"audio": WAV path, "text": transcript, "language": code}, one clip per line')
+    v.add_argument("validation", type=str, help="Validation JSONL, scored after every epoch")
+    v.add_argument("test", type=str, help="Test JSONL, scored once after training")
     v.add_argument("--language", type=str, default=None,
                    help="Language of lines that do not name one; a new code adds that language")
     v.add_argument("--tokens", type=str, default=None,
@@ -299,10 +301,8 @@ def main():
     v.add_argument("--lr", type=float, default=1e-4)
     v.add_argument("--lora-rank", type=int, default=16, help="LoRA adapter rank (default: 16)")
     v.add_argument("--lora-alpha", type=float, default=32.0, help="LoRA scaling alpha (default: 32)")
-    v.add_argument("--val-split", type=float, default=0.1,
-                   help="Fraction of clips held out for validation (0 disables)")
     v.add_argument("--seed", type=int, default=0,
-                   help="Random seed for LoRA init, validation split, and epoch shuffling")
+                   help="Random seed for LoRA init and epoch shuffling")
     v.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     v.add_argument("--out", type=str, default=None,
                    help="Output adapter path (.safetensors)")

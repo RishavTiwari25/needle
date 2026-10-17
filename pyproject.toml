@@ -18,7 +18,8 @@ train = [
   "optax",
   "safetensors",
   "sentencepiece",
-  "whisper-normalizer"
+  "whisper-normalizer",
+  "soxr"
 ]
 gpu = ["jax[cuda12]"]
 metal = [

@@ -25,7 +25,7 @@ pip install "cactus-needle[train]"       # adds JAX + training deps for finetune
 - `agent.reset()` - rewind the conversation, keep the tools loaded.
 - `needle.tool` - decorator that turns a function into a tool schema (attached as `fn._needle_tool`); `@needle.tool(triggers=[r"\b(turn|switch)\b.*\b(on|off)\b"])` adds case-insensitive regexes that route a matching request to this tool and require a call; a triggered call ships even below the confidence floor (raw schemas take the same `"triggers"` list beside `description`).
 - `needle.Field(default=..., *, description, enum, const, ge, le, gt, lt, multiple_of, min_length, max_length, pattern, format, min_items, max_items, unique_items)` - per-argument constraints; attach inline with `typing.Annotated`.
-- `needle.extract(text, schema, system=None, max_new_tokens=512, weights=None)` - one-shot extraction; returns a Pydantic instance if `schema` is a model, else a dict (or `None` if nothing matched). `weights` selects a tuned `.cact` and defaults to whatever the engine already has loaded, so extraction inherits the active tuned model unless you pass another path.
+- `needle.extract(text, schema, system=None, max_new_tokens=512, weights=None, strict=True, generation=None)` - one-shot extraction; returns a Pydantic instance if `schema` is a model, else a dict (or `None` if nothing matched). `weights` loads a tuned `.cact`; without it the base Needle 3 model runs (`generation=2` for Needle 2). `strict=True` raises `needle.ExtractionValidationError` instead of returning a date whose year contradicts the text or a value the engine flags as invented or negated.
 - `needle.transcribe(audio, language=None, keywords=None, word_timestamps=False, weights=None) -> dict` - speech to text in English, German, French, Spanish, Italian, Dutch and Polish, on the same engine and the same install as Needle. `audio` is a WAV path or 16 kHz mono float samples in [-1, 1] of any length, one pass up to 30 s and windowed beyond it. Returns `{"text", "language", "ttft_ms", "decode_tps"}`, plus `"words"` with `start`, `end` and `probability` when `word_timestamps` is set. `language` is one of `en de fr es it nl pl`, or `None` to detect it; `keywords` is a list or a newline-separated string of words and phrases to favour. Silence and steady noise return an empty text and language; other sounds, music especially, can still come out as text, so put a voice activity detector or a wake word in front of an always-on microphone. 16 kHz WAV files and raw samples need nothing extra; other sample rates need the `[mic]` extra for soxr. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use.
 - `needle.stream(chunks, language=None, keywords=None, weights=None)` - live transcription with no limit on length. `chunks` is an iterable of 16 kHz mono float sample buffers, about a second each; the generator yields one dict per chunk with the `"text"` and `"words"` committed by it (times from the start of the stream), the unconfirmed `"pending"` tail, the `"language"`, the seconds `"received"` and `"pass_ms"`, then one more for the tail when the chunks end. Join the texts with a space. Every chunk re-transcribes the last seconds and commits what two passes agree on.
 - `needle.Whistle(weights=None, buffer_size=262144)` - the same model as an object, for `whistle.transcribe(...)`, `whistle.stream(...)`, `whistle.embed(audio)` (the encoder output, one row of floats per 80 ms frame, flattened) or to hold one tuned `.cact`. One model per process, not thread-safe.
@@ -190,14 +190,14 @@ agent.run("...")
 
 Options: `finetune --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --max-len 1024 --val-split 0.1 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors> --generate <n> --model <id> --workers <n>`; `--model` defaults to `deepseek/deepseek-flash-latest`, `--workers` defaults to `8`, and `--checkpoint-dir` defaults to `checkpoints`. `--generate` synthesizes extra examples through the configured OpenRouter endpoint before training. `build --bits 2|4 --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
 
-Whistle fine-tunes the same way: LoRA on the frozen base, merged at export, 4-bit. Data is JSONL, one clip per line, the audio path relative to the file; a `language` outside `en de fr es it nl pl` adds that language:
+Whistle fine-tunes the same way: LoRA on the frozen base, merged at export, 4-bit. Data is three JSONL files, training, validation and test, one clip per line, the audio path relative to the file; a `language` outside `en de fr es it nl pl` adds that language:
 
 ```json
 {"audio": "clips/0001.wav", "text": "Quero reservar uma mesa para dois.", "language": "pt"}
 ```
 
 ```sh
-needle whistle finetune clips.jsonl --tokens tokens.txt                             # LoRA; auto-downloads base
+needle whistle finetune train.jsonl validation.jsonl test.jsonl --tokens tokens.txt  # LoRA; auto-downloads base
 needle whistle build checkpoints/whistle.safetensors --lora checkpoints/whistle_lora.safetensors --out my.cact
 ```
 
@@ -207,7 +207,7 @@ Run a tuned model:
 needle.transcribe("clip.wav", weights="my.cact")
 ```
 
-Options: `whistle finetune --language <code> --tokens <file> --epochs 3 --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --val-split 0.1 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors>`; `--language` fills lines without one, `--tokens` is a file of words or characters to add to the vocabulary, one per line, and `--checkpoint-dir` defaults to `checkpoints`. Clips over 30 s are skipped, and the run prints the held-out word error rate (character error rate for Chinese, Japanese, Korean and Thai) on the 4-bit weights. `whistle build --layers N --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
+Options: `whistle finetune --language <code> --tokens <file> --epochs 3 --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors>`; `--language` fills lines without one, `--tokens` is a file of words or characters to add to the vocabulary, one per line, and `--checkpoint-dir` defaults to `checkpoints`. Clips over 30 s are skipped. The run prints the validation loss after every epoch and ends with the test set's word error rate (character error rate for Chinese, Japanese, Korean and Thai), a quick greedy decode on the 4-bit weights; for real-world numbers, build the `.cact` and transcribe the test set with it. `whistle build --layers N --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
 
 ## Platform (hosted fine-tuning)
 
@@ -260,9 +260,9 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 - `needle whistle compare [clip.wav] [--weights whistle.cact]` - the same English speech through Whistle, Whisper tiny and base (openai-whisper) and Moonshine tiny v2 (moonshine-voice), one line per model with its weight size, time to first token, decode tokens per second, total time and transcript; `/file` runs a WAV between recordings. Whistle's timing comes from the engine's own JSON. Needs the `[mic,compare]` extras.
 - `needle whistle finetune` / `needle whistle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the Whistle fine-tuning pipeline (section above); `build` merges the adapter, slices the `--layers` rung (default 8), exports at 4 bits, and fetches the published `whistle.cact` on every run (without an adapter at full depth it ships that published archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `whistle.cact`.
 - `needle download whistle [--out <dir>]` - pre-download the `whistle.cact` speech weights. There is one engine for both models, so `needle fetch` and `needle download <platform>` cover the library and the platform folders.
-- `needle fetch [--platform-tag <tag>] [--out <dir>]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. For air-gapped devices, also see `NEEDLE3_LIB_PATH` and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
+- `needle fetch [--platform-tag <tag>] [--out <dir>] [--generation 2|3]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. `--generation 2` fetches the Needle 2 engine. For air-gapped devices, also see `NEEDLE3_LIB_PATH` and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
 - `needle platform finetune | generate | jobs | models | files | billing` - the hosted platform from the CLI (section above).
-- `needle download needle3 | needle3.safetensors | model-<id> | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a platform-trained model by id (`--depth N` for one size), a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/`. Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
+- `needle download needle3 | needle3.safetensors | model-<id> | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>] [--generation 2|3]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a platform-trained model by id (`--depth N` for one size), a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/` (`--generation 2` for the Needle 2 engine). Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
 
 ## Common mistakes to avoid
 
@@ -272,7 +272,6 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 - `import needle` does not import JAX; only `needle finetune`/`build` do.
 - `weights=` expects a `.cact` (from `needle build`), not a `.safetensors` checkpoint. `Needle(tools=...)` runs the base Needle 3 archive (fetched once, cached next to the engine); pass `generation=2` for the embedded Needle 2 engine.
 - Checkpoints and adapters must be `.safetensors`; pickle (`.pkl`) is not supported and will raise a `ValueError`. The base is `checkpoints/needle3.safetensors` (20 layers); `needle build --layers N` exports any rung from 2 to 20 of it.
-- The engine cannot unload weights: once a tuned `.cact` is bound, constructing or calling a base-model agent raises instead of silently answering with those weights. Construct agents that want the base model before any tuned one, or run them in separate processes.
 
 ## Telemetry
 

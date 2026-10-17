@@ -96,15 +96,20 @@ def test_finetune_adds_a_language_and_builds_an_archive_with_it(tiny_whistle, pu
     from needle.model.export import parse_tokenizer_blob, read_export
     from needle.model.whistle_finetune import WhistleTokenizer, build_main, finetune_main, token_pieces
 
-    data = _clips(tmp_path, ["não é coração", "ação não", "não não", "coração"] * 2)
+    files = {}
+    for name, lines in (("train", ["não é coração", "ação não", "não não", "coração"] * 2),
+                        ("validation", ["não é coração", "ação"]), ("test", ["coração não", "não"])):
+        (tmp_path / name).mkdir()
+        files[name] = _clips(tmp_path / name, lines)
     tokens = tmp_path / "tokens.txt"
     tokens.write_text("ação\ncoração\n", encoding="utf-8")
     adapter = str(tmp_path / "adapter.safetensors")
     finetune_main(types.SimpleNamespace(
-        jsonl_path=data, language="pt", tokens=str(tokens), checkpoint=tiny_whistle, epochs=1, batch_size=2, lr=1e-3,
-        lora_rank=4, lora_alpha=8.0, val_split=0.25, seed=0, checkpoint_dir=str(tmp_path), out=adapter))
+        **files, language="pt", tokens=str(tokens), checkpoint=tiny_whistle, epochs=1, batch_size=2, lr=1e-3,
+        lora_rank=4, lora_alpha=8.0, seed=0, checkpoint_dir=str(tmp_path), out=adapter))
     printed = capsys.readouterr().out
-    assert "CQ W4 STE + A8 (matches export)" in printed and "held-out clips, scored on the W4 weights" in printed
+    assert "8 train, 2 validation, 2 test clips" in printed and "val " in printed
+    assert "CQ W4 STE + A8 (matches export)" in printed and "on 2 test clips, greedy decoding on the W4 weights" in printed
     saved = read_adapter(adapter)
     pieces = token_pieces(WhistleTokenizer().sp, ["ação", "coração"])
     assert saved["languages"][-1] == "pt" and saved["pieces"] == pieces
@@ -237,14 +242,14 @@ def test_cli_routes_finetune_and_build_and_takes_a_tuned_language(monkeypatch):
     monkeypatch.setattr(tune, "finetune_main", lambda args: seen.append(("finetune", args)))
     monkeypatch.setattr(tune, "build_main", lambda args: seen.append(("build", args)))
     monkeypatch.setattr(needle.agent.whistle, "playground", lambda args: seen.append(("playground", args)))
-    for argv in (["finetune", "clips.jsonl", "--language", "pt", "--tokens", "tokens.txt"],
+    for argv in (["finetune", "train.jsonl", "dev.jsonl", "test.jsonl", "--language", "pt", "--tokens", "tokens.txt"],
                  ["build", "--lora", "a.safetensors", "--layers", "4", "--out", "t.cact"],
                  ["playground", "--language", "pt", "--weights", "t.cact"]):
         monkeypatch.setattr(sys, "argv", ["needle", "whistle", *argv])
         needle.cli.main()
     (_, tuned), (_, built), (_, played) = seen
-    assert (tuned.jsonl_path, tuned.language, tuned.tokens, tuned.batch_size, tuned.lr) == (
-        "clips.jsonl", "pt", "tokens.txt", 16, 1e-4)
+    assert (tuned.train, tuned.validation, tuned.test, tuned.language, tuned.tokens, tuned.batch_size, tuned.lr) == (
+        "train.jsonl", "dev.jsonl", "test.jsonl", "pt", "tokens.txt", 16, 1e-4)
     assert (built.lora, built.layers, built.out, built.platform, built.upload) == ("a.safetensors", 4, "t.cact", None, False)
     assert played.language == "pt"
 

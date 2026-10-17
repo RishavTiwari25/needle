@@ -101,7 +101,7 @@ def read_audio(path):
             import soxr
         except ImportError:
             raise RuntimeError(f"{path} is {rate} Hz; resampling it to {SAMPLE_RATE} Hz needs soxr: "
-                               "pip install cactus-needle[mic]") from None
+                               "pip install cactus-needle[train]") from None
         samples = soxr.resample(samples, rate, SAMPLE_RATE, quality="HQ")
     return samples.astype(np.float32)
 
@@ -199,7 +199,7 @@ def errors(reference, hypothesis, language):
     return row[-1], len(ref)
 
 
-def _score_quantised(model, params, cfg, tokenizer, lora, scale, rows, held, batch):
+def _score_quantised(model, params, cfg, tokenizer, lora, scale, rows, clips, batch):
     import jax
     from .quantize import cq_ste_params, WEIGHT_BITS
 
@@ -210,8 +210,8 @@ def _score_quantised(model, params, cfg, tokenizer, lora, scale, rows, held, bat
                                                               method=Whistle.logits))
     tags = np.arange(tuned.vocab) >= tuned.text
     edits = units = 0
-    for start in range(0, len(held), batch):
-        part = held[start:start + batch]
+    for start in range(0, len(clips), batch):
+        part = clips[start:start + batch]
         enc, frames = encode(merged, *_arrays(part, range(len(part)), tuned)[:2])
         tokens = np.full((len(part), tuned.max_tokens), tuned.pad, np.int32)
         tokens[:, 0] = tuned.bos
@@ -269,16 +269,23 @@ def finetune_main(args):
     params = jax.device_put(params)
     print(f"  {'backend':<9} {backend}  float32")
 
-    clips, skipped = read_clips(args.jsonl_path, args.language)
-    if not clips:
-        raise SystemExit("no usable clips in " + args.jsonl_path)
-    languages = tuple(cfg.languages) + tuple(sorted({lang for *_, lang in clips} - set(cfg.languages)))
+    splits, skipped = [], 0
+    for path in (args.train, args.validation, args.test):
+        clips, dropped = read_clips(path, args.language)
+        if not clips:
+            raise SystemExit("no usable clips in " + path)
+        splits.append(clips)
+        skipped += dropped
+    codes = {lang for clips in splits for *_, lang in clips}
+    languages = tuple(cfg.languages) + tuple(sorted(codes - set(cfg.languages)))
     tokens = read_tokens(args.tokens) if args.tokens else []
     pieces = token_pieces(WhistleTokenizer().sp, tokens)
     tokenizer = WhistleTokenizer(pieces, languages)
     tuned = replace(cfg, text=tokenizer.text, languages=languages)
     note = f"  {skipped} skipped (empty, or over {SECONDS} s)" if skipped else ""
-    print(f"  {'data':<9} {len(clips)} clips  {sum(len(c[0]) for c in clips) / SAMPLE_RATE / 60:.1f} min{note}")
+    minutes = sum(len(c[0]) for c in splits[0]) / SAMPLE_RATE / 60
+    print(f"  {'data':<9} {len(splits[0])} train, {len(splits[1])} validation, {len(splits[2])} test clips"
+          f"  {minutes:.1f} min to train on{note}")
     added = [lang for lang in languages if lang not in cfg.languages]
     print(f"  {'vocab':<9} {len(tokens)} tokens  {len(pieces)} new pieces"
           + (f"  new languages {', '.join(added)}" if added else ""))
@@ -286,10 +293,13 @@ def finetune_main(args):
     if split:
         print(f"  {'warning':<9} not one piece: {', '.join(split)}")
 
-    items = [(samples, [cfg.bos, tuned.tag(lang), *tokenizer.encode(text), cfg.eos], text)
-             for samples, text, lang in clips]
-    long = sum(len(ids) > cfg.max_tokens + 1 for _, ids, _ in items)
-    items = [item for item in items if len(item[1]) <= cfg.max_tokens + 1]
+    def encode(clips):
+        return [(samples, [cfg.bos, tuned.tag(lang), *tokenizer.encode(text), cfg.eos], text)
+                for samples, text, lang in clips]
+
+    encoded = [encode(clips) for clips in splits]
+    long = sum(len(ids) > cfg.max_tokens + 1 for clips in encoded for _, ids, _ in clips)
+    items, validation, test = ([item for item in clips if len(item[1]) <= cfg.max_tokens + 1] for clips in encoded)
     if long:
         print(f"  {'skipped':<9} {long} clips with transcripts over {cfg.max_tokens} tokens")
     if not items:
@@ -309,13 +319,6 @@ def finetune_main(args):
     train = {"lora": lora, "rows": jnp.asarray(initial_rows(params["embedding"]["embedding"], cfg, tokenizer))}
     print(f"  {'lora':<9} rank {args.lora_rank}  alpha {args.lora_alpha:g}  {len(paths)} weight groups"
           f"  +{len(train['rows'])} vocabulary rows")
-
-    n_val = min(int(len(items) * getattr(args, "val_split", 0.1)), len(items) - 1)
-    held = []
-    if n_val > 0:
-        order = rng.permutation(len(items))
-        held, items = [items[i] for i in order[:n_val]], [items[i] for i in order[n_val:]]
-        print(f"  {'holdout':<9} {n_val} clips for validation")
 
     def loss_fn(train, wav, lengths, tokens):
         merged = cq_ste_params(tuned_params(params, cfg, tokenizer, train["lora"], scale, train["rows"]), WEIGHT_BITS)
@@ -356,20 +359,16 @@ def finetune_main(args):
             step_i += 1
             if step_i % every == 0:
                 print(f"  {'step':<9} {step_i}/{total_steps}  loss {last:.4f}", flush=True)
-        if held:
-            val = np.mean([float(eval_step(train, *_arrays(held, range(i, min(i + batch, n_val)), cfg)))
-                           for i in range(0, n_val, batch)])
-            print(f"  {'epoch':<9} {epoch + 1}/{args.epochs}  loss {last:.4f}  val {val:.4f}", flush=True)
-        else:
-            print(f"  {'epoch':<9} {epoch + 1}/{args.epochs}  loss {last:.4f}", flush=True)
+        val = np.mean([float(eval_step(train, *_arrays(validation, range(i, min(i + batch, len(validation))), cfg)))
+                       for i in range(0, len(validation), batch)])
+        print(f"  {'epoch':<9} {epoch + 1}/{args.epochs}  loss {last:.4f}  val {val:.4f}", flush=True)
 
-    if held and getattr(args, "score", True):
-        edits, units = _score_quantised(model, params, cfg, tokenizer, train["lora"], scale, train["rows"],
-                                        held, batch)
-        kind = "cer" if all(by_character(text) for *_, text in held) else "wer"
-        if units:
-            print(f"  {kind:<9} {edits / units:.1%} on {len(held)} held-out clips, scored on the "
-                  f"W{WEIGHT_BITS} weights the archive ships")
+    edits, units = _score_quantised(model, params, cfg, tokenizer, train["lora"], scale, train["rows"], test, batch)
+    kind = "cer" if all(by_character(text) for *_, text in test) else "wer"
+    if units:
+        print(f"  {kind:<9} {edits / units:.1%} on {len(test)} test clips, "
+              f"greedy decoding on the W{WEIGHT_BITS} weights")
+        print(f"  {'note':<9} for real-world numbers, build the .cact and transcribe the test set with it")
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     out = args.out or os.path.join(args.checkpoint_dir, "whistle_lora.safetensors")

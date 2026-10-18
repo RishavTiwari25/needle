@@ -116,9 +116,6 @@ def test_unpublished_engine_wheels_lists_every_missing_tag(monkeypatch):
             fetch.engine_wheel(version, tag, generation) for tag in fetch.WHEEL_TAGS)
     monkeypatch.setattr("huggingface_hub.list_repo_files",
                         lambda repo: sorted(published[repo]) + ["needle3.cact"])
-    android = fetch.engine_wheel(fetch.ENGINE_VERSIONS[3], fetch.ANDROID_TAG, 3)
-    assert fetch.unpublished_engine_wheels() == [fetch.ENGINE_REPOS[3] + "/" + android]
-    published[fetch.ENGINE_REPOS[3]].add(android)
     assert fetch.unpublished_engine_wheels() == []
 
     repo3 = fetch.ENGINE_REPOS[3]
@@ -140,7 +137,7 @@ def test_a_repo_that_cannot_be_listed_holds_none_of_its_wheels(monkeypatch):
     monkeypatch.setattr("huggingface_hub.list_repo_files", refuse)
     missing = fetch.unpublished_engine_wheels()
     engines = len(fetch.ENGINE_VERSIONS) - len(fetch.WEIGHTS_ONLY)
-    assert len(missing) == engines * len(fetch.WHEEL_TAGS) + 1  # plus the generation 3 Android wheel
+    assert len(missing) == engines * len(fetch.WHEEL_TAGS)
 
 
 def test_release_gate_runs_before_the_publish_step():
@@ -300,7 +297,7 @@ def test_engine_load_falls_back_to_the_other_libc(monkeypatch, tmp_path):
     assert loaded["path"].endswith("musl/libneedle.so")
 
 
-def test_android_gets_the_bionic_wheel_instead_of_a_glibc_one(monkeypatch):
+def test_android_is_refused_instead_of_being_handed_a_glibc_wheel(monkeypatch):
     """Termux reports Linux/aarch64, so it used to download a wheel Bionic cannot load."""
     import platform
     from needle.agent import fetch
@@ -313,11 +310,7 @@ def test_android_gets_the_bionic_wheel_instead_of_a_glibc_one(monkeypatch):
     assert fetch._platform_tag() == "manylinux2014_aarch64"
 
     monkeypatch.setattr(fetch, "_is_android", lambda: True)
-    assert fetch._platform_tag() == "android_24_arm64_v8a"
-    assert fetch.other_libc_tag() is None
-
-    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-    with pytest.raises(RuntimeError, match="Android on x86_64;.*NEEDLE3_LIB_PATH"):
+    with pytest.raises(RuntimeError, match="Android .Bionic.*libm.so.6.*NEEDLE3_LIB_PATH"):
         fetch._platform_tag()
 
 

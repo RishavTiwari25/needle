@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -32,3 +33,11 @@ def test_training_dependencies_are_not_required_for_runtime() -> None:
     }
     assert requirements == runtime
     assert train_requirements == training
+
+
+def test_setup_scripts_install_extras_that_exist() -> None:
+    root = Path(__file__).parents[1]
+    extras = set(tomllib.loads((root / "pyproject.toml").read_text())["project"]["optional-dependencies"])
+    for script in ("setup", "setup.bat"):
+        for group in re.findall(r"\.\[([^\]]+)\]", (root / script).read_text()):
+            assert set(group.split(",")) <= extras, script

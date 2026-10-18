@@ -19,7 +19,7 @@ pip install "cactus-needle[train]"       # adds JAX + training deps for finetune
   - `tools`: list of decorated functions, Pydantic models, raw JSON-schema dicts, or a JSON string.
   - `system`: optional environment-facts string (see System facts).
   - `weights`: path to a tuned `.cact` to load instead of the baked base model.
-  - `tool_index_path`: path to persist tool embeddings when you declare many tools.
+  - `tool_index_path`: Needle 2 only (`generation=2`), where it keeps the tool embeddings its retrieval head uses.
 - `agent.run(query, max_steps=8, max_new_tokens=512) -> dict` - full agentic loop: model picks calls, Needle executes your Python functions, feeds results back, returns the final response with the executed tool results attached as `results`.
 - `agent.complete(text, max_new_tokens=512) -> dict` - one turn; you execute the call and feed the result back yourself via the next `complete(...)`.
 - `agent.reset()` - rewind the conversation, keep the tools loaded.
@@ -157,12 +157,14 @@ agent = needle.Needle(tools=tools, system="date: 2026-07-21 Tue 14:30; locale: e
 
 Relative language ("tomorrow at 7") resolves only when a `date:` fact licenses it. Omitting the system turn is safe.
 
-## Tool retrieval (many tools)
+## Many tools
 
-With more than 5 declared tools, a built-in retrieval head renders only the top-5 per turn and constrains the grammar to that subset. Persist embeddings across runs:
+Needle 3 has no tool retrieval head. It reads the whole toolset as part of the prompt, so the order and naming of tools can change which one it picks. Keep a toolset small, with plain names and no shared prefixes such as `media_player__`.
+
+Needle 2 (`generation=2`) has a retrieval head that renders only the top 5 tools per turn when more than 5 are declared, and `tool_index_path` keeps its embeddings between runs.
 
 ```python
-agent = needle.Needle(tools=big_catalogue, tool_index_path="tools.idx")
+agent = needle.Needle(tools=big_catalogue, generation=2, tool_index_path="tools.idx")
 ```
 
 ## Fine-tuning (CLI)

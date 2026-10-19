@@ -12,7 +12,7 @@ def _build_args(checkpoint, out, lora=None, layers=None, platform=None):
 
 
 def test_build_exports_loadable_cact(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.finetune import build_main
+    from needle.model.build import build_main
     from needle.model.export import read_export
 
     out = str(tmp_path / "tiny.cact")
@@ -63,7 +63,7 @@ def test_export_round_trips_a_projection(tiny_checkpoint, tmp_path):
 
 
 def test_build_from_safetensors_checkpoint(tiny_checkpoint, tiny_checkpoint_safetensors, tmp_path, published_base):
-    from needle.model.finetune import build_main
+    from needle.model.build import build_main
     from needle.model.export import read_export
     from needle.model.run import load_checkpoint
     import numpy as np
@@ -81,7 +81,7 @@ def test_build_from_safetensors_checkpoint(tiny_checkpoint, tiny_checkpoint_safe
 
 
 def test_build_layers_exports_the_rung(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.finetune import build_main
+    from needle.model.build import build_main
     from needle.model.export import read_export
 
     out = str(tmp_path / "rung.cact")
@@ -94,7 +94,7 @@ def test_build_layers_exports_the_rung(tiny_checkpoint, tmp_path, published_base
 
 def test_build_platform_places_the_engine_and_the_archive_together(tiny_checkpoint, tmp_path, published_base, monkeypatch):
     from needle.agent import fetch
-    from needle.model.finetune import build_main
+    from needle.model.build import build_main
     from needle.model.export import read_layers
 
     def fake_platform(name, out_dir, generation=3, dest=None):

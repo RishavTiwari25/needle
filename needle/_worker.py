@@ -52,13 +52,17 @@ def _load_library(path, generation=2):
     lib.needle_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
                                 ctypes.c_char_p]
     lib.needle_init.restype = ctypes.c_int
-    lib.needle_complete.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_float),
-                                    ctypes.c_int, ctypes.c_int,
-                                    ctypes.c_char_p, ctypes.c_int]
     lib.needle_complete.restype = ctypes.c_int
-    if int(generation) >= 3:
+    if int(generation) < 3:
+        lib.needle_complete.argtypes = [ctypes.c_char_p, ctypes.c_int,
+                                        ctypes.c_char_p, ctypes.c_int]
+    else:
+        lib.needle_complete.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_float),
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_char_p, ctypes.c_int]
         lib.needle_embed.argtypes = [
-            ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+            ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+            ctypes.POINTER(ctypes.c_float), ctypes.c_int]
         lib.needle_embed.restype = ctypes.c_int
     lib.needle_reset.argtypes = []
     lib.needle_reset.restype = None
@@ -96,8 +100,9 @@ def _child():
                 break
             operation = request.get("operation")
             if operation == "complete":
+                audio = (None, 0) if generation >= 3 else ()
                 code = lib.needle_complete(
-                    request["text"].encode("utf-8"), None, 0,
+                    request["text"].encode("utf-8"), *audio,
                     int(request["max_new_tokens"]), output, len(output))
                 if code < 0:
                     _write_message(protocol, {
@@ -117,7 +122,7 @@ def _child():
                     })
                     continue
                 text = request["text"].encode("utf-8")
-                dim = lib.needle_embed(text, None, 0)
+                dim = lib.needle_embed(text, None, 0, None, 0)
                 if dim <= 0:
                     _write_message(protocol, {
                         "status": "error",
@@ -125,7 +130,7 @@ def _child():
                     })
                     continue
                 embedding = (ctypes.c_float * dim)()
-                code = lib.needle_embed(text, embedding, dim)
+                code = lib.needle_embed(text, None, 0, embedding, dim)
                 if code != dim:
                     _write_message(protocol, {
                         "status": "error",

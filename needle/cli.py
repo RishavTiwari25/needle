@@ -339,7 +339,7 @@ def main():
         from .model.finetune import generate_main
         generate_main(args)
     elif args.command == "build":
-        from .model.finetune import build_main
+        from .model.build import build_main
         build_main(args)
     elif args.command == "download":
         import shutil

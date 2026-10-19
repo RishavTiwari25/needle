@@ -59,6 +59,15 @@ int needle_complete(const char* input, const float* pcm, int samples,
 void needle_reset(void) {
     resets++;
 }
+
+int needle_embed(const char* input, const float* pcm, int samples,
+                 float* output, int capacity) {
+    (void)input;
+    (void)pcm;
+    (void)samples;
+    for (int i = 0; output && i < capacity; i++) output[i] = (float)(model_id + i);
+    return 3;
+}
 ''')
     if sys.platform == "darwin":
         library = tmp_path / "libstub.dylib"
@@ -71,7 +80,7 @@ void needle_reset(void) {
 
 
 def _weights(path, model_id):
-    path.write_bytes((0x05E12A83).to_bytes(4, "little") +
+    path.write_bytes((0x05E12A84).to_bytes(4, "little") +
                      bytes([model_id, 1]))
     return path
 
@@ -79,8 +88,8 @@ def _weights(path, model_id):
 def test_finetunes_run_in_independent_processes(stub_engine, tmp_path):
     first_path = _weights(tmp_path / "first.cact", 11)
     second_path = _weights(tmp_path / "second.cact", 29)
-    first = FineTuneWorker(stub_engine, first_path, "", "[]", None, 4096)
-    second = FineTuneWorker(stub_engine, second_path, "", "[]", None, 4096)
+    first = FineTuneWorker(stub_engine, first_path, "", "[]", None, 4096, generation=3)
+    second = FineTuneWorker(stub_engine, second_path, "", "[]", None, 4096, generation=3)
     try:
         assert first.pid != second.pid
         assert json.loads(first.complete("first", 8))["model"] == 11
@@ -122,4 +131,32 @@ def test_tuned_agents_use_independent_workers(stub_engine, tmp_path,
 def test_worker_propagates_native_load_failure(stub_engine, tmp_path):
     bad = _weights(tmp_path / "bad.cact", 0)
     with pytest.raises(RuntimeError, match="needle_load failed"):
-        FineTuneWorker(stub_engine, bad, "", "[]", None, 4096)
+        FineTuneWorker(stub_engine, bad, "", "[]", None, 4096, generation=3)
+
+
+def test_tuned_embeddings_go_through_the_worker(stub_engine, tmp_path):
+    worker = FineTuneWorker(stub_engine, _weights(tmp_path / "tuned.cact", 5), "", "[]", None, 4096,
+                            generation=3)
+    try:
+        assert worker.embed("hello") == [5.0, 6.0, 7.0]
+    finally:
+        worker.close()
+
+
+def test_needle_2_takes_the_text_alone(monkeypatch):
+    import needle
+
+    class Engine:
+        def needle_init(self, system, tools, index):
+            return 0
+
+        def needle_complete(self, text, max_new_tokens, output, capacity):
+            output.value = b'{"type":"call","function_calls":[]}'
+            return 0
+
+        def needle_reset(self):
+            pass
+
+    monkeypatch.setattr(needle, "_lib", lambda generation=2: Engine())
+    monkeypatch.setattr(needle, "_active", {})
+    assert needle.Needle(tools="[]", generation=2).complete("hello")["function_calls"] == []

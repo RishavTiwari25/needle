@@ -331,3 +331,26 @@ def test_android_is_detected_from_the_api_level_or_the_runtime_env(monkeypatch):
     monkeypatch.delenv("ANDROID_DATA")
     monkeypatch.setattr(sys, "getandroidapilevel", lambda: 34, raising=False)
     assert fetch._is_android() is True
+
+
+def test_building_the_published_archive_needs_no_training_stack(tmp_path, monkeypatch):
+    import needle._telemetry
+    from needle.agent import fetch
+    from needle.cli import main
+
+    base = tmp_path / "needle3.cact"
+    base.write_bytes(b"archive")
+
+    def fake_platform(name, out_dir, generation=3, dest=None):
+        (tmp_path / "pi").mkdir()
+        (tmp_path / "pi" / "needle").write_bytes(b"engine")
+        return [str(tmp_path / "pi" / "needle")]
+
+    monkeypatch.setattr(needle._telemetry, "track", lambda *a, **k: None)
+    monkeypatch.setattr(fetch, "fetch_weights", lambda generation=2, dest_dir=None, force=False: str(base))
+    monkeypatch.setattr(fetch, "download_platform", fake_platform)
+    for name in ("numpy", "jax"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setattr(sys, "argv", ["needle", "build", "--platform", "linux-arm64", "--out", str(tmp_path / "pi")])
+    main()
+    assert (tmp_path / "pi" / "needle3.cact").read_bytes() == b"archive"

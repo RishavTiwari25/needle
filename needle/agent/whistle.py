@@ -103,7 +103,7 @@ def _read_wav(path):
         import numpy
         import soxr
     except ImportError:
-        raise RuntimeError(f"resampling {rate} Hz audio to {SAMPLE_RATE} Hz needs soxr: pip install cactus-needle[mic]") from None
+        raise RuntimeError(f'resampling {rate} Hz audio to {SAMPLE_RATE} Hz needs soxr: pip install "cactus-needle[mic]"') from None
     return soxr.resample(numpy.asarray(mono, numpy.float32), rate, SAMPLE_RATE, quality="HQ")
 
 

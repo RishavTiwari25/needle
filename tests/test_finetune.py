@@ -55,7 +55,8 @@ def test_finetune_writes_adapter(tiny_checkpoint, tmp_path):
 
 
 def test_finetune_then_build_merges(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.finetune import finetune_local, build_main
+    from needle.model.build import build_main
+    from needle.model.finetune import finetune_local
     from needle.model.export import read_export
 
     data = tmp_path / "data.jsonl"
@@ -72,7 +73,8 @@ def test_finetune_then_build_merges(tiny_checkpoint, tmp_path, published_base):
 
 
 def test_build_without_a_checkpoint_uses_the_adapter_base(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.finetune import finetune_local, build_main
+    from needle.model.build import build_main
+    from needle.model.finetune import finetune_local
     from needle.model.export import read_export
 
     data = tmp_path / "data.jsonl"
@@ -126,7 +128,8 @@ def test_finetune_adapter_records_realized_seed(tiny_checkpoint, tmp_path):
 
 
 def test_finetune_adapter_defaults_to_safetensors_and_builds(tiny_checkpoint_safetensors, tmp_path, published_base):
-    from needle.model.finetune import finetune_local, build_main
+    from needle.model.build import build_main
+    from needle.model.finetune import finetune_local
     from needle.model.checkpoints import read_adapter
     from needle.model.export import read_export
 

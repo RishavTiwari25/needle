@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from .checkpoints import read_adapter, write_adapter
+from .checkpoints import is_safetensors, read_adapter, write_adapter
 from .finetune import _training_rng, init_lora, lora_target_paths, merge_lora
 from .whistle import LANGUAGES, Whistle, load_whistle
 
@@ -101,7 +101,7 @@ def read_audio(path):
             import soxr
         except ImportError:
             raise RuntimeError(f"{path} is {rate} Hz; resampling it to {SAMPLE_RATE} Hz needs soxr: "
-                               "pip install cactus-needle[train]") from None
+                               'pip install "cactus-needle[train]"') from None
         samples = soxr.resample(samples, rate, SAMPLE_RATE, quality="HQ")
     return samples.astype(np.float32)
 
@@ -260,6 +260,9 @@ def finetune_main(args):
 
     if args.epochs < 1 or args.batch_size < 1:
         raise SystemExit("--epochs and --batch-size must be at least 1")
+    out = args.out or os.path.join(args.checkpoint_dir, "whistle_lora.safetensors")
+    if not is_safetensors(out):
+        raise SystemExit(f"--out must be a .safetensors file, got {out}")
     base_path = args.checkpoint or DEFAULT_BASE
     params, cfg = load_base(base_path)
     params = jax.tree.map(lambda a: np.asarray(a).astype(np.float32), params)
@@ -276,8 +279,11 @@ def finetune_main(args):
             raise SystemExit("no usable clips in " + path)
         splits.append(clips)
         skipped += dropped
-    codes = {lang for clips in splits for *_, lang in clips}
+    codes = {lang for *_, lang in splits[0]}
     languages = tuple(cfg.languages) + tuple(sorted(codes - set(cfg.languages)))
+    untrained = {lang for clips in splits[1:] for *_, lang in clips} - set(languages)
+    if untrained:
+        raise SystemExit(f"no training clips for {', '.join(sorted(untrained))}")
     tokens = read_tokens(args.tokens) if args.tokens else []
     pieces = token_pieces(WhistleTokenizer().sp, tokens)
     tokenizer = WhistleTokenizer(pieces, languages)
@@ -302,8 +308,9 @@ def finetune_main(args):
     items, validation, test = ([item for item in clips if len(item[1]) <= cfg.max_tokens + 1] for clips in encoded)
     if long:
         print(f"  {'skipped':<9} {long} clips with transcripts over {cfg.max_tokens} tokens")
-    if not items:
-        raise SystemExit("no clips left to train on")
+    for path, clips in zip((args.train, args.validation, args.test), (items, validation, test)):
+        if not clips:
+            raise SystemExit("no usable clips in " + path)
     if tokens:
         found = sum(any(token in text for *_, text in items) for token in tokens)
         print(f"  {'tokens':<9} {found}/{len(tokens)} appear in the transcripts")
@@ -370,8 +377,7 @@ def finetune_main(args):
               f"greedy decoding on the W{WEIGHT_BITS} weights")
         print(f"  {'note':<9} for real-world numbers, build the .cact and transcribe the test set with it")
 
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    out = args.out or os.path.join(args.checkpoint_dir, "whistle_lora.safetensors")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     write_adapter(out, {
         "lora": {"/".join(p): {"A": np.asarray(v["A"]), "B": np.asarray(v["B"])} for p, v in train["lora"].items()},
         "rows": np.asarray(train["rows"]),
@@ -391,7 +397,7 @@ def build_main(args):
     import jax.numpy as jnp
     from ..agent import fetch
     from .export import read_layers
-    from .finetune import upload_archive
+    from .build import upload_archive
 
     base_archive = fetch.fetch_weights(fetch.WHISTLE, force=True)
     print(f"  {'base':<9} {base_archive}  {os.path.getsize(base_archive) / 1e6:.2f} MB")

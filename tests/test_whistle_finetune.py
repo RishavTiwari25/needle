@@ -205,7 +205,7 @@ def test_tokens_come_from_a_file(tmp_path):
 @pytest.mark.slow
 def test_wrong_kinds_of_files_are_refused(tiny_whistle, tiny_checkpoint, published_whistle, tmp_path):
     from needle.model.checkpoints import write_adapter
-    from needle.model.finetune import build_main as needle_build
+    from needle.model.build import build_main as needle_build
     from needle.model.whistle_finetune import build_main, load_base
 
     with pytest.raises(SystemExit, match="not a Whistle checkpoint"):
@@ -228,6 +228,51 @@ def test_finetune_needs_an_epoch_and_a_batch():
     for epochs, batch in ((0, 8), (1, 0)):
         with pytest.raises(SystemExit, match="at least 1"):
             finetune_main(types.SimpleNamespace(epochs=epochs, batch_size=batch))
+
+
+def _splits(tmp_path, **lines):
+    files = {}
+    for name in ("train", "validation", "test"):
+        (tmp_path / name).mkdir()
+        files[name] = _clips(tmp_path / name, lines.get(name, ["não é coração", "ação"]))
+    return files
+
+
+def _finetune(tiny_whistle, tmp_path, files, **kw):
+    from needle.model.whistle_finetune import finetune_main
+
+    finetune_main(types.SimpleNamespace(**{
+        **files, "language": "pt", "tokens": None, "checkpoint": tiny_whistle, "epochs": 1, "batch_size": 2,
+        "lr": 1e-3, "lora_rank": 4, "lora_alpha": 8.0, "seed": 0, "checkpoint_dir": str(tmp_path),
+        "out": str(tmp_path / "adapter.safetensors"), **kw}))
+
+
+@pytest.mark.slow
+def test_every_split_needs_clips_within_the_token_limit(tiny_whistle, tmp_path):
+    files = _splits(tmp_path, validation=["não é coração " * 30])
+    with pytest.raises(SystemExit, match="validation"):
+        _finetune(tiny_whistle, tmp_path, files)
+
+
+@pytest.mark.slow
+def test_a_new_language_needs_training_clips(tiny_whistle, tmp_path):
+    files = _splits(tmp_path)
+    rows = [json.loads(line) for line in open(files["test"], encoding="utf-8")]
+    with open(files["test"], "w", encoding="utf-8") as out:
+        out.writelines(json.dumps({**row, "language": "xx"}) + "\n" for row in rows)
+    with pytest.raises(SystemExit, match="xx"):
+        _finetune(tiny_whistle, tmp_path, files)
+
+
+@pytest.mark.slow
+def test_the_adapter_path_is_checked_before_training(tiny_whistle, tmp_path, capsys):
+    files = _splits(tmp_path)
+    with pytest.raises(SystemExit, match=r"\.safetensors"):
+        _finetune(tiny_whistle, tmp_path, files, out=str(tmp_path / "adapter.bin"))
+    assert "epoch" not in capsys.readouterr().out
+    out = tmp_path / "new" / "adapter.safetensors"
+    _finetune(tiny_whistle, tmp_path, files, out=str(out))
+    assert out.exists()
 
 
 def test_cli_routes_finetune_and_build_and_takes_a_tuned_language(monkeypatch):

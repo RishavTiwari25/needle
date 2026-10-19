@@ -66,7 +66,8 @@ def _finetune_worker(tools_json, api_key, samples, engine):
     import types
     try:
         _FT.update(running=True, step="generating data", log=[], checkpoint=None, error=None)
-        from ..model.finetune import generate_dataset, finetune_local, build_main, DEFAULT_BASE
+        from ..model.build import build_main
+        from ..model.finetune import generate_dataset, finetune_local, DEFAULT_BASE
 
         tools = json.loads(tools_json)
         rows = generate_dataset(

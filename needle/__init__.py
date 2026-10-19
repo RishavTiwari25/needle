@@ -168,11 +168,13 @@ def _lib(generation=2):
         lib = _load_cdll(generation)
         lib.needle_init.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
         lib.needle_init.restype = ctypes.c_int
-        lib.needle_complete.argtypes = [
-            ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
-            ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
         lib.needle_complete.restype = ctypes.c_int
-        if generation >= 3:
+        if generation < 3:
+            lib.needle_complete.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        else:
+            lib.needle_complete.argtypes = [
+                ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
+                ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
             lib.needle_embed.argtypes = [
                 ctypes.c_char_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int,
                 ctypes.POINTER(ctypes.c_float), ctypes.c_int]
@@ -288,8 +290,9 @@ class Needle:
             raw = self._worker.complete(text, max_new_tokens)
         else:
             lib = _lib(self._generation)
+            audio = (None, 0) if self._generation >= 3 else ()
             rc = lib.needle_complete(
-                text.encode("utf-8"), None, 0, int(max_new_tokens), self._buffer,
+                text.encode("utf-8"), *audio, int(max_new_tokens), self._buffer,
                 len(self._buffer))
             if rc < 0:
                 detail = self._buffer.value.decode("utf-8", "replace")

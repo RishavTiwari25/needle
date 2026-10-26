@@ -237,3 +237,24 @@ def test_annotated_pep604_optional_is_not_required():
         pass
 
     assert build_schema(f)["parameters"]["required"] == ["city"]
+
+
+def test_nested_model_argument_refs_resolve_from_the_tool_parameters():
+    import pydantic
+
+    class Address(pydantic.BaseModel):
+        city: str
+
+    class Customer(pydantic.BaseModel):
+        name: str
+        address: Address
+
+    def register(customer: Customer, backup: typing.Optional[typing.List[Customer]] = None):
+        "Register a customer."
+
+    parameters = build_schema(register)["parameters"]
+    customer = parameters["properties"]["customer"]
+
+    assert customer["properties"]["address"] == {"$ref": "#/$defs/Address"}
+    assert "$defs" not in customer
+    assert parameters["$defs"]["Address"]["properties"]["city"]["type"] == "string"

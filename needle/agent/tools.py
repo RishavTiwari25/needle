@@ -137,6 +137,24 @@ def _indent(line):
     return len(line) - len(line.lstrip())
 
 
+def _hoist_defs(schema, defs):
+    """Move the ``$defs`` a model argument carries up to the tool's parameters.
+
+    A pydantic model's ``$ref``s point at ``#/$defs/...`` of its own schema. Nested
+    under a property they would resolve against the tool's parameters instead,
+    which has no ``$defs``, so every nested model became an unresolvable ref.
+    """
+    if isinstance(schema, dict):
+        for key in ("$defs", "definitions"):
+            if isinstance(schema.get(key), dict):
+                defs.setdefault(key, {}).update(schema.pop(key))
+        for value in schema.values():
+            _hoist_defs(value, defs)
+    elif isinstance(schema, list):
+        for item in schema:
+            _hoist_defs(item, defs)
+
+
 def build_schema(fn: Callable) -> dict:
     signature = inspect.signature(fn)
     try:
@@ -164,6 +182,9 @@ def build_schema(fn: Callable) -> dict:
     parameters = {"type": "object", "properties": properties}
     if required:
         parameters["required"] = required
+    defs = {}
+    _hoist_defs(properties, defs)
+    parameters.update(defs)
     out = {"name": fn.__name__}
     if description:
         out["description"] = description
